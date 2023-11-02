@@ -1,0 +1,602 @@
+---
+title: "News Sources and Vaccination Hesitancy"
+author: "Theresa Winner"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r, results=FALSE}
+library(sjPlot)
+library(ggpubr)
+library(tidyverse)
+library(dplyr)
+library(jtools)
+library(ggeffects)
+library(ggplot2)
+library(maps)
+library(readr)
+library(tidyverse)
+library(dplyr)
+library(modelsummary)
+```
+
+# Read and prepare data
+Create dataset for september (created one folder with all september datasets)
+```{r}
+# list_of_files <- list.files(path = "data_september", recursive = TRUE, pattern = "\\.csv$", full.names = TRUE)
+# df <- read_csv(list_of_files, id = "file_name")
+# df$RecordedDate <- as.character(df$RecordedDate)
+# 
+# # 1st September has more variables (298) than the rest of September -> read them separately and put them together
+# first_sept <- read.csv("2021-09-01_full.csv")
+# df <- bind_rows(first_sept, df)
+# 
+# # Save september data as new file
+# library(data.table)
+# fwrite(df, "september_dt.csv")
+```
+
+Read september data
+```{r}
+dt_sept <- read.csv("september_dt.csv")
+```
+
+Prepare Country-Codes and assign UN-Geoscheme to countries (https://en.wikipedia.org/wiki/United_Nations_geoscheme_for_Europe)    -> without Russia as it is mostly in Asia
+```{r}
+country <- read.csv("CTIS_survey_country_region_map_table_ver1.083021.csv")
+
+country_eu <- country %>%
+  mutate(europe_part = case_when(country_region %in% c("Belarus", "Bulgaria", "Czech Republic", "Hungary", 
+                                                       "Poland", "Moldova", "Romania", "Slovakia", 
+                                                       "Ukraine") ~ "East", 
+                                 country_region %in% c("Aland Islands", "Denmark", "Estonia", "Faroe Islands", 
+                                                       "Finland", "Iceland", "Ireland", "Isle Of Man", "Latvia", 
+                                                       "Lithuania","Norway", "Svalbard and Jan Mayen", "Sweden", 
+                                                       "United Kingdom") ~ "North",
+                                 country_region %in% c("Albania", "Andorra", "Bosnia and Herzegovina", "Croatia", 
+                                                       "Gibraltar", "Greece", "Italy", "Vatican City", "Malta", 
+                                                       "Montenegro", "Republic of North Macedonia", "Portugal", 
+                                                       "San Marino", "Serbia", "Slovenia", "Spain") ~ "South",
+                                 country_region %in% c("Austria", "Belgium", "France", "Germany", 
+                                                       "Liechtenstein", "Luxembourg", "Monaco", "Netherlands", 
+                                                       "Switzerland") ~ "West")) %>%
+  filter(!is.na(europe_part))
+
+country_eu <- country_eu[, c("country_region_numeric", "country_region", "europe_part")]
+country_num <- country_eu$country_region_numeric
+```
+
+
+Select only countries in Europe and important variables:  
+- B0: Ever had COVID-19  
+- B7:  Have you been tested for COVID-19 in last days?  
+- B8a: Did your most recent test find, that you had COVID-19?  
+- V1 & V2: Have you had a vaccination & how many?  
+- V15a: Have you an appointment for vaccination?  
+- V3a: If you have the chance to get a vaccination, would you choose it?  
+- V5c: Reasons that you only probably would choose to get a Covid vaccination  
+- C0a: Past 24 hours have you done anything of the following  
+- G1: How much do you worry about getting COVID19?  
+- H3: How many of your friends and family have gotten a COVID vaccination?  
+- I5: Where have you received news in the last 7 days? Local health workers, scientist, who, governement/officials,     
+      politicians, journalists, friends & family, religious leaders, none  
+- I6: How much do you trust news sources?  
+- E3: Gender  
+- E4: Age  
+- E8: Highest level of education  
+- E2: area (city, town, village)  
+
+```{r}
+dt_sept_eu <- dt_sept %>% 
+  filter(A2_2_1 %in% country_num) %>%
+  dplyr::select(survey_region, A2_2_1, B0, B7, B8a, V1, V2, V15a, V3a, V5c_1, V5c_2, V5c_3, V5c_4, V5c_5, V5c_6, 
+                V5c_7, V5c_8, V5c_9, V5c_10, C0a_1, C0a_2, C0a_3, C0a_4, C0a_5, C0a_6, C0a_7, G1, H3, I5_1, I5_2,
+                I5_3, I5_4, I5_5, I5_6, I5_7, I5_8, I5_9, I6_1, I6_2, I6_3, I6_4, I6_5, I6_6, I6_7, I6_8, E3, 
+                E4, E8, E2) %>%
+  mutate_all(na_if, -99) %>%
+  mutate_all(na_if, -88) %>%
+  mutate_all(na_if, -77)
+```
+
+Change vaccination-variable to a binary variable with 0 (No) and 1 (Yes) and mark people who didn't want to say their gender with "NA"
+
+```{r}
+dt_sept_eu$V1[dt_sept_eu$V1 == 3] <- NA
+dt_sept_eu$V1[dt_sept_eu$V1 == 2] <- 0
+
+dt_sept_eu$E3[dt_sept_eu$E3 == 4] <- NA
+```
+
+Assign geoscheme of europe to september dataset
+
+```{r}
+names(dt_sept_eu)[names(dt_sept_eu) == "A2_2_1"] <- "country_region_numeric"
+dt_sept_eu <- merge(dt_sept_eu, country_eu, by = "country_region_numeric")
+```
+
+Group variables in (binary) variables for regression models and rename variables:  
+- One age variable with three groups (18-34, 35-64, $\geq$ 65) and one with two (< 55, $\geq$ 55)  
+- Gender in male and female  
+- Education in school- and university education  
+- Vaccinationrate in friendsgroup in two groups (Few and most friends)  
+- Worried about catching COVID-19 (No, Strongly)  
+- Area in urban and rural  
+- All trust variables in trust and no trust  
+
+```{r}
+dt_sept_eu <- dt_sept_eu %>%
+  mutate(age_grouped = case_when(E4 %in% c(1, 2) ~ "1", E4 %in% c(3, 4, 5) ~ "2", E4 %in% c(6, 7) ~ "3")) %>%
+  mutate(age_dummy_grouped = case_when(E4 %in% c(1, 2, 3, 4) ~ "0", E4 %in% c(5, 6, 7) ~ "1")) %>%
+  mutate(gender_grouped = case_when(E3 %in% c(1) ~ "0", E3 %in% c(2) ~ "1", E3 %in% c(3) ~ NA_character_)) %>%
+  mutate(education_grouped = case_when(E8 %in% c(1, 2, 3, 4, 5) ~ "0", E8 %in% c(6, 7) ~ "1")) %>%
+  mutate(vacc_friends_grouped = case_when(H3 %in% c(1, 2) ~ "0", H3 %in% c(3, 4, 5) ~ "1")) %>%
+  mutate(worry_grouped = case_when(G1 %in% c(3, 4) ~ "0", G1 %in% c(1, 2) ~ "1")) %>%
+  mutate(area_grouped = case_when(E2 %in% c(1, 2) ~ "0", E2 %in% c(3) ~ "1")) %>%
+  mutate(trust_loc_group = case_when(I6_1 %in% c(1) ~ "0", I6_1 %in% c(2, 3) ~ "1")) %>%
+  mutate(trust_science_group = case_when(I6_2 %in% c(1) ~ "0", I6_2 %in% c(2, 3) ~ "1")) %>%
+  mutate(trust_who_group = case_when(I6_3 %in% c(1) ~ "0", I6_3 %in% c(2, 3) ~ "1")) %>%
+  mutate(trust_gov_group = case_when(I6_4 %in% c(1) ~ "0", I6_4 %in% c(2, 3) ~ "1")) %>%
+  mutate(trust_pol_group = case_when(I6_5 %in% c(1) ~ "0", I6_5 %in% c(2, 3) ~ "1")) %>%
+  mutate(trust_journalist_group = case_when(I6_6 %in% c(1) ~ "0", I6_6 %in% c(2, 3) ~ "1")) %>%
+  mutate(trust_fam_group = case_when(I6_7 %in% c(1) ~ "0", I6_7 %in% c(2, 3) ~ "1")) %>%
+  mutate(trust_religious_group = case_when(I6_8 %in% c(1) ~ "0", I6_8 %in% c(2, 3) ~ "1")) %>%
+  mutate(B0 = case_when(B0 %in% c(1) ~ "1", I6_8 %in% c(2) ~ "0")) %>%
+  mutate(V2 = case_when(V2 %in% c(1) ~ "0", V2 %in% c(2) ~ "1", V2 %in% c(3) ~ NA_character_))
+
+dt_sept_eu <- dt_sept_eu %>%
+  rename( "cov_inf" =  B0, "test_cov" = B7, "vacc" = V1,"numb_vacc" = V2, 
+          "appointment_vacc" = V15a, "worry_cov" = G1, "vacc_friends" = H3,
+          "news_loc" = I5_1, "news_science" = I5_2, "news_who" = I5_3, "news_gov" = I5_4,
+          "news_pol" = I5_5, "news_journalist" = I5_6, "news_fam" = I5_7, "news_religious" = I5_8,
+          "news_none" = I5_9, "trust_loc" = I6_1, "trust_science" = I6_2, "trust_who" = I6_3, "trust_gov" = I6_4,
+          "trust_pol" = I6_5, "trust_journalist" = I6_6, "trust_fam" = I6_7, "trust_religious" = I6_8,
+          "gender" = E3, "age" = E4, "education" = E8, "area" = E2)
+```
+
+Factorize all categorical variables
+
+```{r}
+dt_sept_eu$age_grouped <- as.factor(dt_sept_eu$age_grouped)
+# levels(dt_eu$europe_part) <- c("East", "North", "South", "West")
+dt_sept_eu$area <- as.factor(dt_sept_eu$area)
+dt_sept_eu$trust_loc <- as.factor(dt_sept_eu$trust_loc)
+dt_sept_eu$trust_science <- as.factor(dt_sept_eu$trust_science)
+dt_sept_eu$trust_who <- as.factor(dt_sept_eu$trust_who)
+dt_sept_eu$trust_gov <- as.factor(dt_sept_eu$trust_gov)
+dt_sept_eu$trust_pol <- as.factor(dt_sept_eu$trust_pol)
+dt_sept_eu$trust_journalist <- as.factor(dt_sept_eu$trust_journalist)
+dt_sept_eu$trust_fam <- as.factor(dt_sept_eu$trust_fam)
+dt_sept_eu$trust_religious <- as.factor(dt_sept_eu$trust_religious)
+
+dt_sept_eu$trust_loc_group <- as.factor(dt_sept_eu$trust_loc_group)
+dt_sept_eu$trust_science_group <- as.factor(dt_sept_eu$trust_science_group)
+dt_sept_eu$trust_who_group <- as.factor(dt_sept_eu$trust_who_group)
+dt_sept_eu$trust_gov_group <- as.factor(dt_sept_eu$trust_gov_group)
+dt_sept_eu$trust_pol_group <- as.factor(dt_sept_eu$trust_pol_group)
+dt_sept_eu$trust_journalist_group <- as.factor(dt_sept_eu$trust_journalist_group)
+dt_sept_eu$trust_fam_group <- as.factor(dt_sept_eu$trust_fam_group)
+dt_sept_eu$trust_religious_group <- as.factor(dt_sept_eu$trust_religious_group)
+dt_sept_eu$age_dummy_grouped <- as.factor(dt_sept_eu$age_dummy_grouped)
+dt_sept_eu$gender_grouped <- as.factor(dt_sept_eu$gender_grouped)
+dt_sept_eu$area_grouped <- as.factor(dt_sept_eu$area_grouped)
+dt_sept_eu$education_grouped <- as.factor(dt_sept_eu$education_grouped)
+dt_sept_eu$cov_inf <- as.factor(dt_sept_eu$cov_inf)
+dt_sept_eu$vacc_friends_grouped <- as.factor(dt_sept_eu$vacc_friends_grouped)
+
+dt_sept_eu$news_loc <- as.factor(dt_sept_eu$news_loc)
+dt_sept_eu$news_science <- as.factor(dt_sept_eu$news_science)
+dt_sept_eu$news_who <- as.factor(dt_sept_eu$news_who)
+dt_sept_eu$news_gov <- as.factor(dt_sept_eu$news_gov)
+dt_sept_eu$news_pol <- as.factor(dt_sept_eu$news_pol)
+dt_sept_eu$news_journalist <- as.factor(dt_sept_eu$news_journalist)
+dt_sept_eu$news_fam <- as.factor(dt_sept_eu$news_fam)
+dt_sept_eu$news_religious <- as.factor(dt_sept_eu$news_religious)
+dt_sept_eu$news_none <- as.factor(dt_sept_eu$news_none)
+```
+
+## Map for european geoscheme:
+```{r}
+europe_map <- map_data("world", region = unique(dt_sept_eu$country_region))
+region_data <- europe_map %>%
+  group_by(region) %>%
+  summarise(long = mean(long), lat = mean(lat))
+
+names(country_eu)[names(country_eu) == "country_region"] <- "region" 
+europe_map <- left_join(country_eu, europe_map, by = "region")
+
+mycoleuropa <- c("#FF9900", "#FFFF00", "#FF66CC", "#99CCFF")
+europe_map$europe_part <- factor(europe_map$europe_part, levels = c("North", "East", "South", "West"))
+  
+ggplot(europe_map, aes(long, lat, group = group))+
+  geom_polygon(fill = "lightgray", color = "grey95", linewidth = 0.2) +
+  geom_polygon(aes(fill = europe_part), color = "white") +
+  scale_fill_manual(values = mycoleuropa, na.value = "grey90") +
+  labs(x = "Longitude", y = "Latitude") +
+  theme_bw() +
+  theme(axis.text.x = element_blank(), 
+      axis.text.y = element_blank(),
+      axis.title.x = element_blank(), 
+      axis.title.y = element_blank(),
+      legend.text = element_text(size = 20), 
+      legend.title = element_blank(),
+      legend.key.size = unit(1, "cm"))
+```
+
+
+
+# Model with news- and trust-variables as covariables
+## Generalized Linear Model with Logit-Link function
+Using the trust- & news-variables, gender, area, education, worried about catching COVID-19, had a COVID-19 infection, 
+the area and the part of europe they live in and the number of vaccinated friends as covariables
+
+Model with ungrouped variables:
+```{r}
+mod_log_full <- glm(vacc ~ news_loc + news_science + news_who + news_gov + news_pol + news_journalist + news_fam
+                          + news_religious + news_none + trust_loc + trust_science + trust_who + trust_gov 
+                          + trust_pol + trust_journalist + trust_fam + trust_religious + gender + age_grouped 
+                          + area + education_grouped + cov_inf + worry_cov + vacc_friends_grouped + europe_part, 
+                    family = binomial(), data = dt_sept_eu)
+summary(mod_log_full)
+```
+
+Model with grouped variables
+```{r}
+mod_log_group <- glm(vacc ~ news_loc + news_science + news_who + news_gov + news_pol + news_journalist + news_fam
+                          + news_religious + news_none + trust_loc_group + trust_science_group + trust_who_group 
+                          + trust_gov_group + trust_pol_group + trust_journalist_group + trust_fam_group
+                          + trust_religious_group + gender + age_dummy_grouped + area_grouped + education_grouped 
+                          + cov_inf + worry_cov + vacc_friends_grouped + europe_part, 
+                     family = binomial(), data = dt_sept_eu)
+summary(mod_log_group)
+```
+
+Model with grouped variables and interactions
+```{r}
+mod_log_int <- glm(vacc ~ news_loc + news_science + news_who + news_gov + news_pol + news_journalist + news_fam
+                      + news_religious + news_none + trust_loc_group + trust_science_group + trust_who_group 
+                      + trust_gov_group + trust_pol_group + trust_journalist_group + trust_fam_group 
+                      + trust_religious_group + gender + age_dummy_grouped + area_grouped + education_grouped 
+                      + cov_inf + worry_cov + vacc_friends_grouped + europe_part 
+                      + trust_religious_group:news_religious + news_gov:trust_gov_group 
+                      + news_fam:trust_fam_group + news_pol:trust_pol_group + news_science:trust_science_group, 
+                    family = binomial(), data = dt_sept_eu)
+summary(mod_log_int)
+```
+
+
+## Generalized Linear Model with Probit-Link Function
+Model with ungrouped variables
+```{r}
+mod_full_probit <- glm(vacc ~ news_loc + news_science + news_who + news_gov + news_pol + news_journalist
+                    + news_fam + news_religious + news_none + trust_loc + trust_science + trust_who + trust_gov 
+                    + trust_pol + trust_journalist + trust_fam + trust_religious + gender + age_grouped + area
+                    + education_grouped + cov_inf + worry_cov + vacc_friends_grouped + europe_part, 
+                    family = binomial(link = "probit"), data = dt_sept_eu)
+summary(mod_full_probit)
+```
+
+# Model with news-variables as covariables
+
+Model with ungrouped variables:
+```{r}
+news_mod_log_full <- glm(vacc ~ news_loc + news_science + news_who + news_gov + news_pol + news_journalist
+                          + news_fam + news_religious + news_none + gender + age_grouped + area
+                          + education_grouped + cov_inf + worry_cov + vacc_friends_grouped + europe_part, 
+                        family = binomial(), data = dt_sept_eu)
+summary(news_mod_log_full)
+```
+
+Model with grouped variables:
+```{r}
+news_mod_log_group <- glm(vacc ~ news_loc + news_science + news_who + news_gov + news_pol + news_journalist 
+                          + news_fam + news_religious + news_none + gender_grouped + age_dummy_grouped 
+                          + area_grouped + education_grouped + cov_inf + worry_cov + vacc_friends_grouped 
+                          + europe_part, family = binomial(), data = dt_sept_eu)
+summary(news_mod_log_group)
+```
+
+Model with grouped variables and interactions:
+```{r}
+news_mod_log_int <- glm(vacc ~ news_loc + news_science + news_who + news_gov + news_pol + news_journalist 
+                        + news_fam + news_religious + news_none + gender_grouped + age_dummy_grouped 
+                        + area_grouped + education_grouped + cov_inf + worry_cov + vacc_friends_grouped 
+                        + europe_part + worry_cov:news_science + age_dummy_grouped:vacc_friends_grouped 
+                        + education_grouped:news_fam, family = binomial(), data = dt_sept_eu)
+summary(news_mod_log_int)
+```
+
+Effect plots:
+```{r, message=FALSE, warning=FALSE}
+set_theme(base = theme_bw(base_size = 15))
+plot_vacc_news <- plot_model(news_mod_log_int, type = "eff", dot.size = 3.5)
+
+lab_news <- c("No", "Yes")
+
+ggarrange(plot_vacc_news$gender_grouped + labs(x = "Gender", y = NULL) + ggtitle(NULL) + 
+            scale_y_continuous(labels = scales::percent, limits = c(0.45, 0.95)) +
+            scale_x_continuous(breaks = c(0, 1), labels = c("Male", "Female")) + 
+            theme(axis.title.x = element_text(size = 13)) + geom_line(),
+          plot_vacc_news$age_dummy_grouped + labs(x = "Age", y = NULL) + ggtitle(NULL) + 
+            scale_y_continuous(labels = scales::percent, limits = c(0.45, 0.95)) +
+            scale_x_continuous(breaks = c(0, 1), labels = c("<55", expression("">=55))) + 
+            theme(axis.title.x = element_text(size = 13)) + geom_line(),
+          plot_vacc_news$education_grouped + labs(x = "Education", y = NULL) + ggtitle(NULL) +
+            scale_y_continuous(labels = scales::percent, limits = c(0.45, 0.95)) + 
+            scale_x_continuous(breaks = c(0, 1), labels = c("School", "Univ.")) + 
+            theme(axis.title.x = element_text(size = 13)) + geom_line(), 
+          plot_vacc_news$cov_inf + labs(x = "Had COVID-19", y = NULL) + ggtitle(NULL) + 
+            scale_y_continuous(labels = scales::percent, limits = c(0.45, 0.95)) + 
+            scale_x_continuous(breaks = c(0, 1), labels = c("No", "Yes")) + 
+            theme(axis.title.x = element_text(size = 13)) + geom_line(), ncol = 2, nrow = 2)
+
+ggarrange(plot_vacc_news$news_loc + labs(x="News from Health Organ.", y = NULL) + ggtitle(NULL) + 
+            scale_y_continuous(labels = scales::percent, limits = c(0.45, 0.95)) + 
+            scale_x_continuous(breaks = c(0, 1), labels = lab_news) + 
+            theme(axis.title.x = element_text(size = 13)) + geom_line(),
+          plot_vacc_news$news_science + labs(x="News from Scientists", y=NULL) + ggtitle(NULL) + 
+            scale_y_continuous(labels = scales::percent, limits = c(0.45, 0.95)) + 
+            scale_x_continuous(breaks = c(0, 1), labels = lab_news) + 
+            theme(axis.title.x = element_text(size = 13)) + geom_line(),
+          plot_vacc_news$news_who + labs(x = "News from WHO", y = NULL) + ggtitle(NULL) + 
+            scale_y_continuous(labels = scales::percent, limits = c(0.45, 0.95))+ 
+            scale_x_continuous(breaks = c(0, 1), labels = lab_news) + 
+            theme(axis.title.x = element_text(size = 13)) + geom_line(),
+          plot_vacc_news$news_gov+ labs(x = "News from Government", y = NULL) + ggtitle(NULL) + 
+            scale_y_continuous(labels = scales::percent, limits = c(0.45, 0.95)) + 
+            scale_x_continuous(breaks = c(0, 1), labels = lab_news)+ 
+            theme(axis.title.x = element_text(size = 13)) + geom_line(), ncol = 2, nrow = 2)
+
+ggarrange(plot_vacc_news$news_pol + labs(x = "News from Politicians", y = NULL) + ggtitle(NULL) + 
+            scale_y_continuous(labels = scales::percent, limits = c(0.45, 0.95)) + 
+            scale_x_continuous(breaks = c(0, 1), labels = lab_news) +
+            theme(axis.title.x = element_text(size = 13)) + geom_line(),
+          plot_vacc_news$news_journalist + labs(x = "News from Journalists", y = NULL) + ggtitle(NULL) + 
+            scale_y_continuous(labels = scales::percent, limits = c(0.45, 0.95)) + 
+            scale_x_continuous(breaks = c(0, 1), labels = lab_news)+ 
+            theme(axis.title.x = element_text(size = 13)) + geom_line(),
+          plot_vacc_news$news_religious + labs(x = "News from Religious Leaders", y = NULL) + ggtitle(NULL) + 
+            scale_y_continuous(labels = scales::percent, limits = c(0.45, 0.95)) + 
+            scale_x_continuous(breaks = c(0, 1), labels = lab_news)+ 
+            theme(axis.title.x = element_text(size = 13)) + geom_line(),
+          plot_vacc_news$news_fam + labs(x = "News from Family & Friends", y = NULL) + ggtitle(NULL) + 
+            scale_y_continuous(labels = scales::percent, limits = c(0.45, 0.95)) + 
+            scale_x_continuous(breaks = c(0, 1), labels = lab_news) + 
+            theme(axis.title.x = element_text(size = 13)) + geom_line(), ncol = 2, nrow = 2)
+
+ggarrange(plot_vacc_news$news_none + labs(x = "No News", y = NULL) + ggtitle(NULL) +
+            scale_y_continuous(labels = scales::percent, limits = c(0.45, 0.95)) + 
+            scale_x_continuous(breaks = c(0, 1), labels = lab_news) + 
+            theme(axis.title.x = element_text(size = 13)) + geom_line(),
+          plot_vacc_news$vacc_friends_grouped + labs(x = "# Vaccinated Friends", y=NULL) + ggtitle(NULL) + 
+            scale_y_continuous(labels = scales::percent, limits = c(0.45, 0.95)) + 
+            scale_x_continuous(breaks = c(0, 1), labels = c("Few", "Most")) + 
+            theme(axis.title.x = element_text(size = 13)) + geom_line(),
+          plot_vacc_news$worry_cov + labs(x = "Worried about COVID-19", y=NULL) + ggtitle(NULL) + 
+            scale_y_continuous(labels = scales::percent, limits = c(0.45, 0.95)) +
+            scale_x_continuous(breaks = c(1, 4), labels = c("Strongly", "Not")) + 
+            theme(axis.title.x = element_text(size = 13)) + geom_line(), ncol = 2, nrow = 2) 
+
+ggarrange(plot_vacc_news$area_grouped + labs(x = "Area", y = NULL) + ggtitle(NULL) + 
+            scale_y_continuous(labels = scales::percent, limits = c(0.45, 0.95))+ 
+            scale_x_continuous(breaks = c(0, 1), labels = c("Urban", "Rural")) + 
+            theme(axis.title.x = element_text(size = 13)) + geom_line(),
+          plot_vacc_news$europe_part + labs(x = "Part of Europe", y=NULL) + ggtitle(NULL) + 
+            scale_y_continuous(labels = scales::percent, limits = c(0.45, 0.95)) + 
+            theme(axis.title.x = element_text(size = 13)) + geom_line(), ncol = 2)
+```
+
+Effect plot for interaction effects:
+```{r, message=FALSE, warning=FALSE}
+plot_model(news_mod_log_int, type = "eff", terms = c("worry_cov", "news_science"), dot.size = 3.5) +
+  scale_y_continuous(labels = scales::percent, limits = c(0.45, 0.95)) +
+  scale_x_continuous(breaks = c(1, 4), labels = c("Strongly", "Not")) +
+  labs(x = "Worried about COVID-19", y = NULL) +
+  scale_color_brewer(name = "News from Scientists", labels = c("No", "Yes"), palette = "Accent") +
+  ggtitle(NULL) +
+  theme(legend.position = "top",
+        axis.title.x = element_text(size = 13))
+
+plot_model(news_mod_log_int, type = "eff", terms = c("vacc_friends_grouped", "age_dummy_grouped"), dot.size = 3.5) +
+  scale_y_continuous(labels = scales::percent, limits = c(0.45, 0.95)) +
+  scale_x_continuous(breaks = c(0, 1), labels = c("Few", "Most")) +
+  labs(x = "# Vaccinated Friends", y = NULL) +
+  scale_color_brewer(name = "Age", labels = c("<55", expression("">=55)), palette = "Set1") +
+  ggtitle(NULL) +
+  theme(legend.position = "top",
+        axis.title.x = element_text(size = 13))
+
+plot_model(news_mod_log_int, type = "eff", terms = c("news_fam", "education_grouped"), dot.size = 3.5) +
+  scale_y_continuous(labels = scales::percent, limits = c(0.45, 0.95)) +
+  scale_x_continuous(breaks = c(0, 1), labels = lab_news) +
+  labs(x = "News from Family & Friends", y = NULL) +
+  scale_color_brewer(name = "Education", labels = c("School", "University"), palette = "Dark2") +
+  ggtitle(NULL) +
+  theme(legend.position = "top",
+        axis.title.x = element_text(size = 13))
+```
+
+
+# Model with trust-variables as covariables
+Model with ungrouped variables:
+```{r}
+trust_mod_log_full <- glm(vacc ~ trust_loc + trust_science + trust_who + trust_gov + trust_pol
+                 + trust_journalist + trust_fam + trust_religious + gender + age_grouped + area
+                 + education_grouped + cov_inf + worry_cov + vacc_friends_grouped + europe_part, 
+                 family = binomial(), data = dt_sept_eu)
+summary(trust_mod_log_full)
+```
+
+Model with grouped variables
+```{r}
+trust_mod_log_group <- glm(vacc ~ trust_loc_group + trust_science_group + trust_who_group + trust_gov_group 
+                          + trust_pol_group + trust_journalist_group + trust_fam_group + trust_religious_group 
+                          + gender_grouped + age_dummy_grouped + area_grouped + education_grouped + cov_inf 
+                          + worry_cov + vacc_friends_grouped + europe_part, 
+                          family = binomial(), data = dt_sept_eu)
+summary(trust_mod_log_group)
+```
+
+Model with grouped variables and interactions:
+```{r}
+trust_mod_log_int <- glm(vacc ~ trust_loc_group + trust_science_group + trust_who_group + trust_gov_group 
+                         + trust_pol_group + trust_journalist_group + trust_fam_group + trust_religious_group 
+                         + gender_grouped + age_dummy_grouped + area_grouped + education_grouped + cov_inf 
+                         + worry_cov + vacc_friends_grouped + europe_part + age_dummy_grouped:trust_religious_group
+                         + education_grouped:trust_gov_group + gender_grouped:trust_loc_group, 
+                        family = binomial(), data = dt_sept_eu)
+summary(trust_mod_log_int)
+```
+
+Effect plots:
+```{r, message=FALSE, warning=FALSE}
+set_theme(base = theme_bw(base_size = 15))
+plot_vacc_trust <- plot_model(trust_mod_log_int, type = "eff", dot.size = 3.5)
+
+lab_trust <- c("No Trust", "Trust")
+
+ggarrange(plot_vacc_trust$gender_grouped + labs(x = "Gender", y = NULL) + ggtitle(NULL) + 
+            scale_y_continuous(labels = scales::percent, limits = c(0.55, 0.95)) +
+            scale_x_continuous(breaks = c(0, 1), labels = c("Male", "Female")) + geom_line(),
+          plot_vacc_trust$age_dummy_grouped + labs(x = "Age", y = NULL) + ggtitle(NULL) + 
+            scale_y_continuous(labels = scales::percent, limits = c(0.55, 0.95)) +
+            scale_x_continuous(breaks = c(0, 1), labels = c("<55", expression("">=55))) + geom_line(),
+          plot_vacc_trust$education_grouped + labs(x = "Education", y = NULL) + ggtitle(NULL) +
+            scale_y_continuous(labels = scales::percent, limits = c(0.55, 0.95)) + 
+            scale_x_continuous(breaks = c(0, 1), labels = c("School", "Univ.")) + geom_line(), 
+          plot_vacc_trust$cov_inf + labs(x = "Had COVID-19", y = NULL) + ggtitle(NULL) + 
+            scale_y_continuous(labels = scales::percent, limits = c(0.55, 0.95)) + 
+            scale_x_continuous(breaks = c(0, 1), labels = c("Yes", "No")) + geom_line(), ncol = 2, nrow = 2)
+
+ggarrange(plot_vacc_trust$trust_loc_group + labs(x="Trust in Health Organ.", y = NULL) + ggtitle(NULL) + 
+            scale_y_continuous(labels = scales::percent, limits = c(0.45, 0.95)) + 
+            scale_x_continuous(breaks = c(0, 1), labels = lab_trust)+ 
+            theme(axis.title.x = element_text(size = 13)) + geom_line(),
+          plot_vacc_trust$trust_science_group + labs(x="Trust in Scientists", y=NULL) + ggtitle(NULL) + 
+            scale_y_continuous(labels = scales::percent, limits = c(0.45, 0.95)) + 
+            scale_x_continuous(breaks = c(0, 1), labels = lab_trust) + 
+            theme(axis.title.x = element_text(size = 13)) + geom_line(),
+          plot_vacc_trust$trust_who_group + labs(x = "Trust in WHO", y = NULL) + ggtitle(NULL) + 
+            scale_y_continuous(labels = scales::percent, limits = c(0.45, 0.95))+ 
+            scale_x_continuous(breaks = c(0, 1), labels = lab_trust) + 
+            theme(axis.title.x = element_text(size = 13)) + geom_line(),
+          plot_vacc_trust$trust_gov_group + labs(x = "Trust in Government", y = NULL) + ggtitle(NULL) + 
+            scale_y_continuous(labels = scales::percent, limits = c(0.45, 0.95)) + 
+            scale_x_continuous(breaks = c(0, 1), labels = lab_trust)+ 
+            theme(axis.title.x = element_text(size = 13)) + geom_line(), ncol = 2, nrow = 2)
+
+ggarrange(plot_vacc_trust$trust_pol_group + labs(x = "Trust in Politicians", y = NULL) + ggtitle(NULL) + 
+            scale_y_continuous(labels = scales::percent, limits = c(0.45, 0.95)) + 
+            scale_x_continuous(breaks = c(0, 1), labels = lab_trust) + 
+            theme(axis.title.x = element_text(size = 13)) + geom_line(),
+          plot_vacc_trust$trust_journalist_group + labs(x = "Trust in Journalists", y = NULL) + ggtitle(NULL) + 
+            scale_y_continuous(labels = scales::percent, limits = c(0.45, 0.95)) + 
+            scale_x_continuous(breaks = c(0, 1), labels = lab_trust) +
+            theme(axis.title.x = element_text(size = 13)) + geom_line(), 
+          plot_vacc_trust$trust_religious_group + labs(x = "Trust in Religious Leaders", y = NULL) + ggtitle(NULL) + 
+            scale_y_continuous(labels = scales::percent, limits = c(0.45, 0.95)) + 
+            scale_x_continuous(breaks = c(0, 1), labels = lab_trust)+ 
+            theme(axis.title.x = element_text(size = 13)) + geom_line(),
+          plot_vacc_trust$trust_fam_group + labs(x = "Trust in Family & Friends", y = NULL) + ggtitle(NULL) + 
+            scale_y_continuous(labels = scales::percent, limits = c(0.45, 0.95)) + 
+            scale_x_continuous(breaks = c(0, 1), labels = lab_trust) + 
+            theme(axis.title.x = element_text(size = 13)) + geom_line(), ncol = 2, nrow = 2)
+
+ggarrange(plot_vacc_trust$trust_fam_group + labs(x = "Trust in Family & Friends", y = NULL) + ggtitle(NULL) + 
+            scale_y_continuous(labels = scales::percent, limits = c(0.55, 0.95)) + 
+            scale_x_continuous(breaks = c(0, 1), labels = lab_trust) + geom_line(),
+          plot_vacc_trust$vacc_friends_grouped + labs(x = "# Vaccinated Friends", y=NULL) + ggtitle(NULL) + 
+            scale_y_continuous(labels = scales::percent, limits = c(0.55, 0.95)) + 
+            scale_x_continuous(breaks = c(0, 1), labels = c("Few", "Most")) + geom_line(),
+          plot_vacc_trust$worry_cov + labs(x = "Worried about COVID-19", y=NULL) + ggtitle(NULL) + 
+            scale_y_continuous(labels = scales::percent, limits = c(0.55, 0.95)) +
+            scale_x_continuous(breaks = c(1, 4), labels = c("Strongly", "Not")) + geom_line())
+ggarrange(plot_vacc_trust$area_grouped + labs(x = "Area", y = NULL) + ggtitle(NULL) + 
+            scale_y_continuous(labels = scales::percent, limits = c(0.55, 0.95))+ 
+            scale_x_continuous(breaks = c(0, 1), labels = c("Urban", "Rural")) + geom_line(),
+          plot_vacc_trust$europe_part + labs(x = "Part of Europe", y=NULL) + ggtitle(NULL) + 
+            scale_y_continuous(labels = scales::percent, limits = c(0.55, 0.95)) + geom_line(),
+          ncol = 2)
+```
+
+Effect Plots for interaction effects:
+```{r, message=FALSE, warning=FALSE}
+plot_model(trust_mod_log_int, type = "eff", terms = c("trust_religious_group", "age_dummy_grouped"), dot.size = 4) + 
+  scale_y_continuous(labels = scales::percent, limits = c(0.45, 0.95)) +
+  scale_x_continuous(breaks = c(0, 1), labels = lab_trust) +
+  labs(x = "Trust in Religious Leaders", y = NULL) +
+  scale_color_brewer(name = "Age", labels = c("<55", expression("">=55)), palette = "Accent") +
+  ggtitle(NULL) +
+  theme(legend.position = "top",
+        axis.title.x = element_text(size = 13))
+
+plot_model(trust_mod_log_int, type = "eff", terms = c("trust_gov_group", "education_grouped"), dot.size = 4) + 
+  scale_y_continuous(labels = NULL, limits = c(0.45, 0.95)) +
+  scale_x_continuous(breaks = c(0, 1), labels = lab_trust) +
+  labs(x = "Trust in Government", y = NULL) +
+  scale_color_brewer(name = "Education", labels = c("School", "University"), palette = "Set1") +
+  ggtitle(NULL) +
+  theme(legend.position = "top",
+        axis.title.x = element_text(size = 13))
+  
+plot_model(trust_mod_log_int, type = "eff", terms = c("trust_loc_group", "gender_grouped"), dot.size = 4) + 
+  scale_y_continuous(labels = NULL, limits = c(0.45, 0.95)) +
+  scale_x_continuous(breaks = c(0, 1), labels = lab_trust) +
+  labs(x = "Trust in Local Health Organ.", y = NULL) +
+  scale_color_brewer(name = "Gender", labels = c("Male", "Female"), palette = "Dark2") +
+  ggtitle(NULL) +
+  theme(legend.position = "top",
+        axis.title.x = element_text(size = 13))
+```
+
+# Booster Vaccination
+Create dataset for february (created folders for different versions in february)
+```{r}
+## 1st-13th February
+# list_of_files_1 <- list.files(path = "data_feb1", recursive = TRUE, pattern = "\\.csv$", full.names = TRUE)
+# df1 <- read_csv(list_of_files_1, id = "file_name")
+# df1$RecordedDate <- as.character(df1$RecordedDate)
+# 
+## 14th-23rd February
+# list_of_files_2 <- list.files(path = "data_feb2", recursive = TRUE, pattern = "\\.csv$", full.names = TRUE)
+# df2 <- read_csv(list_of_files_2, id = "file_name")
+# df2$RecordedDate <- as.character(df2$RecordedDate)
+# 
+## 24th-26th February
+# list_of_files_3 <- list.files(path = "data_feb3", recursive = TRUE, pattern = "\\.csv$", full.names = TRUE)
+# df3 <- read_csv(list_of_files_3, id = "file_name")
+# df3$RecordedDate <- as.character(df3$RecordedDate)
+# 
+## 27th-28th February 
+# list_of_files_4 <- list.files(path = "data_feb4", recursive = TRUE, pattern = "\\.csv$", full.names = TRUE)
+# df4 <- read_csv(list_of_files_4, id = "file_name")
+# df4$RecordedDate <- as.character(df4$RecordedDate)
+# 
+# df <- bind_rows(df1, df2, df3, df4)
+# 
+# library(data.table)
+# fwrite(df, "february_dt.csv")
+```
+
+Read and prepare data of february
+```{r}
+dt_feb <- read.csv("february_dt.csv")
+dt_feb_eu <- dt_feb %>% 
+  filter(A2_2_1 %in% country_num) %>%
+  dplyr::select(survey_region, B0a, A2_2_1, B7, B8a, V1, V2, V15a, V3a, C0a_1, C0a_2, C0a_3, C0a_4, C0a_5, C0a_6, 
+                C0a_7, G1, H3, I5_1, I5_2, I5_3, I5_4, I5_5, I5_6, I5_7, I5_8, I5_9, I6_1, I6_2, I6_3, I6_4, I6_5, 
+                I6_6, I6_7, I6_8, E3, V11, E4, E8, E2) %>%
+  mutate_all(na_if, -99) %>%
+  mutate_all(na_if, -88) %>%
+  mutate_all(na_if, -77)
+```
+
+How many people answered the question "How many COVID-19 vaccinations have you received?"
+```{r}
+table(dt_feb_eu$V2)
+```
+-> only 27 answers to the booster-question and therefore no further research
+
+
+
+
+

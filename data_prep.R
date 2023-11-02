@@ -18,7 +18,7 @@ fwrite(df, "september_dt.csv")
 
 #########################################################################################################
 ############# Read and prepare september data
-dt <- read.csv("september_dt.csv")
+dt_sept <- read.csv("september_dt.csv")
 
 ### Prepare Country codes
 country <- read.csv("CTIS_survey_country_region_map_table_ver1.083021.csv")
@@ -57,9 +57,9 @@ country_num <- country_eu$country_region_numeric
 # - E2: area (city, town, village)
 
 
-dt_eu <- dt %>% 
+dt_sept_eu <- dt_sept %>% 
   filter(A2_2_1 %in% country_num) %>%
-  select(survey_region, A2_2_1, B0, B7, B8a, V1, V2, V15a, V3a, V5c_1, V5c_2, V5c_3, V5c_4, V5c_5, V5c_6, V5c_7, 
+  dplyr::select(survey_region, A2_2_1, B0, B7, B8a, V1, V2, V15a, V3a, V5c_1, V5c_2, V5c_3, V5c_4, V5c_5, V5c_6, V5c_7, 
          V5c_8, V5c_9, V5c_10, C0a_1, C0a_2, C0a_3, C0a_4, C0a_5, C0a_6, C0a_7, G1, H3, I5_1, I5_2, I5_3, I5_4, I5_5, I5_6, I5_7, I5_8, I5_9, I6_1, I6_2, I6_3, 
          I6_4, I6_5, I6_6, I6_7, I6_8, E3, V11, E4, E8, E2) %>%
   mutate_all(na_if, -99) %>%
@@ -67,16 +67,16 @@ dt_eu <- dt %>%
   mutate_all(na_if, -77)
 
 # change Vaccination-Variable to a binary variable with 0 (No) and 1 (Yes)
-dt_eu$V1[dt_eu$V1 == 3] <- NA
-dt_eu$V1[dt_eu$V1 == 2] <- 0
+dt_sept_eu$V1[dt_sept_eu$V1 == 3] <- NA
+dt_sept_eu$V1[dt_sept_eu$V1 == 2] <- 0
 
 # People who didn't want to say which gender they are: NA
-dt_eu$E3[dt_eu$E3 == 4] <- NA
+dt_sept_eu$E3[dt_sept_eu$E3 == 4] <- NA
 
 
 ## assign the geoscheme of europe to september dataset
-names(dt_eu)[names(dt_eu) == "A2_2_1"] <- "country_region_numeric"
-dt_eu <- merge(dt_eu, country_eu, by = "country_region_numeric")
+names(dt_sept_eu)[names(dt_sept_eu) == "A2_2_1"] <- "country_region_numeric"
+dt_sept_eu <- merge(dt_sept_eu, country_eu, by = "country_region_numeric")
 
 ## group variables in (binary) variables for regression models:
 # - one age variable with three groups and one with two
@@ -87,7 +87,7 @@ dt_eu <- merge(dt_eu, country_eu, by = "country_region_numeric")
 # - area in urban and rural
 # - all trust variables in trust and no trust
 
-dt_eu <- dt_eu %>%
+dt_sept_eu <- dt_sept_eu %>%
   mutate(age_grouped = case_when(E4 %in% c(1, 2) ~ "1", E4 %in% c(3, 4, 5) ~ "2", E4 %in% c(6, 7) ~ "3")) %>%
   mutate(age_dummy_grouped = case_when(E4 %in% c(1, 2, 3, 4) ~ "0", E4 %in% c(5, 6, 7) ~ "1")) %>%
   mutate(gender_grouped = case_when(E3 %in% c(1) ~ "0", E3 %in% c(2) ~ "1", E3 %in% c(3) ~ NA_character_)) %>%
@@ -102,12 +102,14 @@ dt_eu <- dt_eu %>%
   mutate(trust_pol_group = case_when(I6_5 %in% c(1) ~ "0", I6_5 %in% c(2, 3) ~ "1")) %>%
   mutate(trust_journalist_group = case_when(I6_6 %in% c(1) ~ "0", I6_6 %in% c(2, 3) ~ "1")) %>%
   mutate(trust_fam_group = case_when(I6_7 %in% c(1) ~ "0", I6_7 %in% c(2, 3) ~ "1")) %>%
-  mutate(trust_religious_group = case_when(I6_8 %in% c(1) ~ "0", I6_8 %in% c(2, 3) ~ "1"))
+  mutate(trust_religious_group = case_when(I6_8 %in% c(1) ~ "0", I6_8 %in% c(2, 3) ~ "1")) %>%
+  mutate(B0 = case_when(B0 %in% c(1) ~ "1", I6_8 %in% c(2) ~ "0")) %>%
+  mutate(V2 = case_when(V2 %in% c(1) ~ "0", V2 %in% c(2) ~ "1", V2 %in% c(3) ~ NA_character_))
 
 
 
 ## Rename variables
-dt_eu <- dt_eu %>%
+dt_sept_eu <- dt_sept_eu %>%
   rename( "cov_inf" =  B0, "test_cov" = B7, "vacc" = V1,"numb_vacc" = V2, 
           "appointment_vacc" = V15a, "worry_cov" = G1, "vacc_friends" = H3,
           "news_loc" = I5_1, "news_science" = I5_2, "news_who" = I5_3, "news_gov" = I5_4,
@@ -134,17 +136,42 @@ dt_eu <- dt_eu %>%
 # 
 
 # Factorize categorical variables
-dt_eu$age_grouped <- as.factor(dt_eu$age_grouped)
+dt_sept_eu$age_grouped <- as.factor(dt_sept_eu$age_grouped)
 # levels(dt_eu$europe_part) <- c("East", "North", "South", "West")
-dt_eu$area <- as.factor(dt_eu$area)
-dt_eu$trust_loc <- as.factor(dt_eu$trust_loc)
-dt_eu$trust_science <- as.factor(dt_eu$trust_science)
-dt_eu$trust_who <- as.factor(dt_eu$trust_who)
-dt_eu$trust_gov <- as.factor(dt_eu$trust_gov)
-dt_eu$trust_pol <- as.factor(dt_eu$trust_pol)
-dt_eu$trust_journalist <- as.factor(dt_eu$trust_journalist)
-dt_eu$trust_fam <- as.factor(dt_eu$trust_fam)
-dt_eu$trust_religious <- as.factor(dt_eu$trust_religious)
+dt_sept_eu$area <- as.factor(dt_sept_eu$area)
+dt_sept_eu$trust_loc <- as.factor(dt_sept_eu$trust_loc)
+dt_sept_eu$trust_science <- as.factor(dt_sept_eu$trust_science)
+dt_sept_eu$trust_who <- as.factor(dt_sept_eu$trust_who)
+dt_sept_eu$trust_gov <- as.factor(dt_sept_eu$trust_gov)
+dt_sept_eu$trust_pol <- as.factor(dt_sept_eu$trust_pol)
+dt_sept_eu$trust_journalist <- as.factor(dt_sept_eu$trust_journalist)
+dt_sept_eu$trust_fam <- as.factor(dt_sept_eu$trust_fam)
+dt_sept_eu$trust_religious <- as.factor(dt_sept_eu$trust_religious)
+
+dt_sept_eu$trust_loc_group <- as.factor(dt_sept_eu$trust_loc_group)
+dt_sept_eu$trust_science_group <- as.factor(dt_sept_eu$trust_science_group)
+dt_sept_eu$trust_who_group <- as.factor(dt_sept_eu$trust_who_group)
+dt_sept_eu$trust_gov_group <- as.factor(dt_sept_eu$trust_gov_group)
+dt_sept_eu$trust_pol_group <- as.factor(dt_sept_eu$trust_pol_group)
+dt_sept_eu$trust_journalist_group <- as.factor(dt_sept_eu$trust_journalist_group)
+dt_sept_eu$trust_fam_group <- as.factor(dt_sept_eu$trust_fam_group)
+dt_sept_eu$trust_religious_group <- as.factor(dt_sept_eu$trust_religious_group)
+dt_sept_eu$age_dummy_grouped <- as.factor(dt_sept_eu$age_dummy_grouped)
+dt_sept_eu$gender_grouped <- as.factor(dt_sept_eu$gender_grouped)
+dt_sept_eu$area_grouped <- as.factor(dt_sept_eu$area_grouped)
+dt_sept_eu$education_grouped <- as.factor(dt_sept_eu$education_grouped)
+dt_sept_eu$cov_inf <- as.factor(dt_sept_eu$cov_inf)
+dt_sept_eu$vacc_friends_grouped <- as.factor(dt_sept_eu$vacc_friends_grouped)
+
+dt_sept_eu$news_loc <- as.factor(dt_sept_eu$news_loc)
+dt_sept_eu$news_science <- as.factor(dt_sept_eu$news_science)
+dt_sept_eu$news_who <- as.factor(dt_sept_eu$news_who)
+dt_sept_eu$news_gov <- as.factor(dt_sept_eu$news_gov)
+dt_sept_eu$news_pol <- as.factor(dt_sept_eu$news_pol)
+dt_sept_eu$news_journalist <- as.factor(dt_sept_eu$news_journalist)
+dt_sept_eu$news_fam <- as.factor(dt_sept_eu$news_fam)
+dt_sept_eu$news_religious <- as.factor(dt_sept_eu$news_religious)
+dt_sept_eu$news_none <- as.factor(dt_sept_eu$news_none)
 
 
 
